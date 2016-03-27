@@ -1,0 +1,227 @@
+---
+title: "Using Machine Learning to Predict the Quality of Exercise"
+author: "Mark Schactman"
+date: "March 20, 2016"
+output: html_document
+---
+  
+  
+##Introduction  
+Activity measurement devices are on everyone's wrists these days (Jawbone, Fitbit, etc.).  
+
+These devices allow people to quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this analysis, I used the data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. The participant performed barbell lifts correctly and then incorrectly in four different ways. These lifts were supervised by an experienced weight lifter to ensure the correct and incorrect lifts were all performed as required.
+
+Many thanks to Velloso, et. al. for the data and detailed documentation.    
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.  
+
+http://groupware.les.inf.puc-rio.br/har  
+
+Questions to be answered are:  
+1. How the model was built,  
+2. How cross-validation was used,  
+3. What the sample error is, and  
+4. Why did I make the choices I did.   
+
+
+```{r setup, echo=FALSE, include=FALSE}
+#Install necessary packages
+#install.packages("ggplot2")
+#install.packages("caret")
+#install.packages("randomForest")
+#install.packages("MASS")
+#install.packages("rattle")
+#install.packages("gbm")
+#install.packages("splines")
+#install.packages("parallel")
+#install.packages("plyr")
+#install.packages("survival")
+
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(MASS)
+library(rattle)
+library(gbm)
+library(splines)
+library(parallel)
+library(plyr)
+library(survival)
+
+#Read the data
+setwd("C:\\Users\\Mark\\Documents\\JHU Data Science\\Machine Learning\\Project")
+xx <- read.csv("pml-training.csv")
+yy <- read.csv("pml-testing.csv")
+
+#Drop unneed rows, columns
+train <- xx[xx$new_window=='no', c(8:11, 37:49, 60:68, 84:86, 102, 113:124, 140, 151:160)]
+
+test <- yy[yy$new_window=='no', c(8:11, 37:49, 60:68, 84:86, 102, 113:124, 140, 151:160)]
+```
+  
+    
+##Data  
+
+The training data has many summary statistics built into the dataset. However, the testing data does not have these variables. As such, it makes no sense to include these summary variables in the training models. After reducing the training data to the same variables as the testing data, there are 52 variables that can be used to predict the five types of lifts denoted in the data by the variable _classe_.  
+
+The 52 variables are actually 13 variables collected from each of four monitors (belt, arm, dumbell, and forearm).  
+-roll  
+-pitch  
+-yaw  
+-total acceleration  
+-gyroscope (in the x, y, and z planes)  
+-acceleration (in the x, y, and z planes), and  
+-magnetometer (in the x, y, and z planes)  
+
+The training set is large (~19,000 records), so I decided to split the training set into training and validation sets to help better assess the out-of-sample error. This straightforward cross-validation technique seemed sufficient because of the size of the initial dataset.   
+
+The validation data will allow better assessment of accuracy of predictions on the small test set of 20 samples.   
+
+```{r split, echo=FALSE}
+set.seed(123412)
+recs <- createDataPartition(y=train$classe, p=0.6, list=FALSE)
+train1 <- train[recs, ]
+valid1 <- train[-recs, ]
+```
+
+I checked the variability of each parameter using the near-zero variance function in R. No variable met this criteria, so I kept all 52 variables. I also computed the correlation between each pair of 52 variable to access colinearity. There are 1,326 pairs of variables (_52 x 51 / 2_). Among these pairs, only a small number have a correlation greater than 0.8. As such, I decided to leave all the variables in the models below.
+
+```{r explore}
+#Near zero variance
+nzv <- nearZeroVar(train1, saveMetrics= TRUE)
+nzv
+
+#Pairs of variables with high correlation
+c <- cor(train1[,1:52], use="complete.obs", method="pearson") 
+cc <- c[c > 0.8 & c != 1]
+ccc <- length(cc)/2
+ccc
+```
+
+As an assessment of predictive power of the variables, I plotted each of the belt measurements for each of the five types of exercise. The _gyroscopic_ variables seem quite similar across the exercise types, while _roll_ and _yaw_ look different and should be important predictors.  
+
+```{r fp, echo=FALSE, fig.width = 6, fig.height = 9}
+#Feature plot
+featurePlot(train1[, grep(pattern='belt', names(train1), value=TRUE)], 
+            train1[,53],
+            main="Belt measurements for each type of exercise")
+```
+  
+```{r PCA, echo=FALSE}
+#PCA - tried pre-processing but this did not help
+#xxx <- prcomp(train1[,1:52])
+#summary(xxx)
+
+#preproc <- preProcess(train[,1:52], method='pca', pcaComp=18)
+#train1x <- predict(preproc, train1)
+#zrfx <- train(train1$classe ~ ., data=train1x, method="rf", importance=T)
+#zrfx$finalModel
+
+#predict(zrf, newdata=test)
+#predict(zrfx, predict(preproc, test))
+```
+  
+  
+##Modelling  
+
+My approach to the modelling was to attempt three types of models on the training data and then assess the out-of-sample variance using the validation data. These models (appropriate for a categorical outcome variable) are:  
+-gradient boosted model  
+-random forest  
+-linear discriminant analysis  
+
+If needed to improve the accuracy of the prediction, I could create a final model using random forests using the results of the predicted results from the first three models. This _stacked_ model should improve the overall accuracy of the prediction.  
+  
+  
+###Gradient Boosted Model  
+
+The GBM model is higly accurate as seen below from the confusion matrix on the validation data.  
+
+```{r gbm, echo=TRUE, cache=TRUE}
+#Gradient boosted model
+zgbm <- train(classe ~ ., data=train1, method="gbm", verbose=FALSE)
+
+zzgbm_pred <- predict(zgbm, newdata=valid1)
+cm_gbm <- confusionMatrix(zzgbm_pred, valid1$classe)
+cm_gbm
+```
+
+The accuracy on the validation data is `r format(cm_gbm$overall[1], digits=3)`.
+  
+  
+###Random Forest  
+
+The random forest results model was also highly accurate based on the out-of-bag error rate as well as the accuracy on the prediction data.  
+
+```{r rf, echo=TRUE, cache=TRUE}
+#Random forests
+zrf <- train(classe ~ ., data=train1, method="rf", importance=T)
+zrf$finalModel
+
+zzrf_pred <- predict(zrf, newdata=valid1)
+cm_rf <- confusionMatrix(zzrf_pred, valid1$classe)
+cm_rf
+```
+
+The accuracy is `r format(cm_rf$overall[1], digits=3)`.  
+Variable importance is plotted below.  
+
+```{r vip, echo=FALSE, fig.width = 8, fig.height = 8}
+#Random forests - variable importance
+varImpPlot(zrf$finalModel, main="Variable Importance Plot")
+```
+  
+  
+###Linear Discriminant Analysis  
+
+The LDA was the least accurate of the models. 
+
+```{r lda, echo=TRUE, cache=TRUE}
+#LDA
+zlda <- train(classe ~ ., data=train1, method="lda")
+#fancyRpartPlot(zlda$finalModel)
+
+zzlda_pred <- predict(zlda, newdata=valid1)
+cm_lda <- confusionMatrix(zzlda_pred, valid1$classe)
+cm_lda
+```
+
+The accuracy on the validation data is `r format(cm_lda$overall[1], digits=3)`. 
+  
+  
+###Stacked analysis  
+
+The last step in building the prediction model is to combine the predictions from the three previous models and use a random forest approach to build a final model. The results are below.  
+
+  
+```{r test, echo=TRUE, cache=TRUE}
+pred <- data.frame(zzrf_pred, zzgbm_pred, zzlda_pred, classe=valid1$classe)
+stack <- train(classe~., data=pred, method="rf")
+test_pred <- predict(stack, pred)
+cm_stack <- confusionMatrix(test_pred, valid1$classe)
+cm_stack
+
+```
+  
+  
+##Predicting from the test set  
+
+The final step is to use the stacked model to predict results from the small test set of 20 samples. I have also printed the results from the three individual models.
+
+```{r pred20, echo=TRUE}
+test1 <- predict(zrf, test)
+test2 <- predict(zgbm, test)
+test3 <- predict(zlda, test)
+testall <- data.frame(zzrf_pred=test1, zzgbm_pred=test2, zzlda_pred=test3)
+
+#Individual model predictions
+testall
+
+#Stacked model predictions
+pred20 <- predict(stack, testall)
+pred20
+```
+
+
+
+
+
